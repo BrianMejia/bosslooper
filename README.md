@@ -27,6 +27,10 @@ and the program will cut the song into the portions specified. An example .csv w
     4:59.600, 5:57.950, 1, Battle 3
     5:26.000, 6:07.056, 0, Finale
 
+The formatting goes (time in MM:SS.SSS format):
+
+    Start Time, End Time, isLoop (0/1), Name
+
 ## Module Documentation
 
 * [PyGame mixer](https://www.pygame.org/docs/ref/mixer.html)
