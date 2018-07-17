@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+import time
 import pygame
 import keyboard
 from pydub import AudioSegment
@@ -99,8 +100,10 @@ def get_menu_choice(musicLoaded):
         print(".: Quit [q]")
         print()
         choice = input("Enter Option: ").lower().strip()
+
         if choice == 'l' or choice == 'q' or (musicLoaded and choice == 's'):
             return choice
+
         clear_screen()
         print_heading("Boss Looper - Main Menu")
 
@@ -124,19 +127,19 @@ def perform_load(): # loads music segments from user's .csv file
 
     clear_screen()
     print_heading("Boss Looper - Load Menu")
-    inputSong = str(input("Input file name of song: "))
-    inputParts = str(input("Input file name of loop portions: "))
 
+    inputSong = str(input("Input file name of song: "))
     try:
-        inputFile = open(inputParts, 'r')
         song = AudioSegment.from_ogg(inputSong)
         songName = inputSong.strip().split('.')[0] # for creating folder
         if not os.path.exists(songName):
             os.makedirs(songName)
-    except IOError:
-        raise IOError("Cannot open '" + inputSong + "'.")
+    except FileNotFoundError:
+        raise FileNotFoundError("Cannot open '" + inputSong + "'.")
 
+    inputParts = str(input("Input file name of loop portions: "))
     try:
+        inputFile = open(inputParts, 'r')
         numLines = sum(1 for line in open(inputParts))
     except IOError:
         raise IOError("Cannot open '" + inputParts + "'.")
@@ -145,19 +148,23 @@ def perform_load(): # loads music segments from user's .csv file
     lineNum = 1
     for line in inputFile:
         progbar(lineNum, numLines, 30)
+
         line = line.strip().split(',')
         if len(line) != 4:
             raise ValueError("Invalid number of fields for loops. Expected 4, received %d on line %d." %(len(line), lineNum))
+
         partFile = songName + "/p" + str(lineNum) + ".ogg"
         milliStart = getMilliSec(line[0])
         milliEnd = getMilliSec(line[1])
-        tempSong = song[milliStart:milliEnd] # thank you PyDub, very easy song splitting
+        tempSong = song[milliStart:milliEnd] # thanks to Pydub, simple song splitting
+
         tempSong.export(partFile, format="ogg") # places in own song directory
-        if (int(line[2])): # From .csv file, 1 - Music portion, 0 - Transition portion
+        if (int(line[2])): # from .csv file, 1 - Music portion, 0 - Transition portion
             musicQueue.append(partFile)
         else:
             transitionQueue.append(partFile)
         songStructure.append(line[3])
+
         lineNum += 1
 
     inputFile.close()
@@ -178,96 +185,80 @@ def perform_start():
     global transitionQueue
     global songStructure
 
-    transitionMix = ChannelFader(transitionQueue[0])
-    musicMix = MusicFader(musicQueue[0])
-    phaseText = songStructure[0]
-
-    # clock for keeping track of how long a transition goes on for
-    clock = pygame.time.Clock()
-    timer = transitionMix.sound.get_length()
-    dt = 0
-
-    timerReset = True
-    startedLoop = False
-    swappedLoop = True
-
     musicPhase = 0
     transitionPhase = 0
     songPhase = 0
 
+    transitionMix = ChannelFader(transitionQueue[transitionPhase])
+    musicMix = MusicFader(musicQueue[musicPhase])
+    phaseText = songStructure[songPhase]
+
+    # clock for keeping track of how long a transition goes on for
+    elapsed = time.time()
+    length = transitionMix.sound.get_length()
+
     transitionMix.channel.play(transitionMix.sound)
-    musicMix.set_volume(0)
 
     # not looping, need transition times
     reset_screen(False)
 
     while True:
-        if timerReset:
-            timer -= dt
-            if timer <= 0.07 and not startedLoop and songPhase != len(songStructure) - 1:
-                # have to give music a little time to play ahead
-                # in order to play in sync of transition stopping
-                musicMix.set_volume(1)
-                musicMix.music.play(-1)
-                startedLoop = True
-            if timer <= 0:
-                if songPhase == len(songStructure) - 1: # last phase in queue
-                    sys.stdout.flush()
-                    musicMix.music.stop()
-                    transitionMix.sound.stop()
-                    transitionMix.channel.stop()
-                    return
+        while transitionMix.channel.get_busy(): # transition is playing
+            progbar(time.time() - elapsed, length, 50) # display remaining time on transition
 
-                # make sure phases don't exceed amount given by user
-                transitionPhase = min(transitionPhase + 1, len(transitionQueue) - 1)
-                songPhase = min(songPhase + 1, len(songStructure) - 1)
-
-                # now that music is given time to play, can stop transition
-                transitionMix.set_volume(0)
-                transitionMix.sound = pygame.mixer.Sound(transitionQueue[transitionPhase])
-                timerReset = False
-
-                # is looping, no longer need transition times
-                reset_screen(True)
-            else:
-                dt = clock.tick(30) / 1000
-                progbar(transitionMix.sound.get_length() - timer, transitionMix.sound.get_length(), 30)
-
-        if transitionMix.channel.get_busy() and musicMix.music.get_volume() == 0 and not swappedLoop:
-            # move on to next music phase while transition
-            # is playing to get rid of latency
-            musicPhase = min(musicPhase + 1, len(musicQueue) - 1)
-            songPhase = min(songPhase + 1, len(songStructure) - 1)
-            musicMix.music.load(musicQueue[musicPhase])
-            swappedLoop = True
-            reset_screen(False)
-
-        try:
-            if keyboard.is_pressed('alt+shift+s') and musicMix.music.get_busy(): # move to next transition phase
-                musicMix.fade_to(0) # music fades out
-                transitionMix.channel.play(transitionMix.sound)
-                transitionMix.fade_to(1) # transition simultaneously fades in
-
-                # have to get new timer for length of playing transition
-                timer = transitionMix.sound.get_length()
-                clock = pygame.time.Clock()
-                dt = 0
-
-                timerReset = True
-                swappedLoop = False
-                startedLoop = False
-            elif keyboard.is_pressed('alt+shift+q'): # quit to menu
-                sys.stdout.flush()
+            if keyboard.is_pressed('alt+shift+q'): # quit to menu
                 musicMix.music.stop()
                 transitionMix.channel.stop()
                 transitionMix.sound.stop()
                 return
-        except:
-            pass
 
-        # update faders in case of fade in/out
-        musicMix.update()
-        transitionMix.update()
+        # transition has ended, check to see if it is last phase
+        if songPhase == len(songStructure) - 1:
+            musicMix.music.stop()
+            transitionMix.sound.stop()
+            transitionMix.channel.stop()
+            return
+
+        # begin playing next music phase
+        musicMix.music.play(-1)
+        transitionMix.fade_to(0)
+
+        # advance transition and song phases, make sure phases don't go past alloted size
+        transitionPhase = min(transitionPhase + 1, len(transitionQueue) - 1)
+        songPhase = min(songPhase + 1, len(songStructure) - 1)
+        transitionMix.sound = pygame.mixer.Sound(transitionQueue[transitionPhase])
+        length = transitionMix.sound.get_length()
+
+        # looping, need additional option
+        reset_screen(True)
+
+        while musicMix.music.get_busy(): # music is playing
+            transitionMix.update() # if transition has not faded out, do so
+
+            if keyboard.is_pressed('alt+shift+s'): # move to next transition phase
+                musicMix.fade_to(0) # start to fade out music
+                transitionMix.channel.play(transitionMix.sound) # play transition simultaneously
+                transitionMix.fade_to(1)
+
+                elapsed = time.time() # for progbar while fading
+                musicPhase = min(musicPhase + 1, len(musicQueue) - 1)
+                songPhase = min(songPhase + 1, len(songStructure) - 1)
+                reset_screen(False)
+
+                while transitionMix.channel.get_volume() < 1:
+                    progbar(time.time() - elapsed, length, 50)
+                    musicMix.update()
+                    transitionMix.update()
+
+                musicMix.music.stop()
+                musicMix.music.load(musicQueue[musicPhase]) # load next phase while transition is playing
+                musicMix.set_volume(1) # set back to full volume for when transition ends
+
+            if keyboard.is_pressed('alt+shift+q'): # quit to menu
+                musicMix.music.stop()
+                transitionMix.channel.stop()
+                transitionMix.sound.stop()
+                return
 
 def main(): # the main menu
     try:
@@ -275,7 +266,9 @@ def main(): # the main menu
         while True:
             clear_screen()
             print_heading("Boss Looper - Main Menu")
+
             choice = get_menu_choice(songLoaded)
+
             if perform_action(choice): # quit program
                 pygame.quit()
                 sys.stdout.flush()
